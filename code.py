@@ -46,47 +46,117 @@ def fetch_folders():
 
     try:
         with st.spinner("جاري تحميل المجلدات..."):
-            course = requests.get(f"{base_url}/{course_id}", headers=headers).json()
-            folders = course["data"]["folders"]
+            # جلب بيانات الكورس
+            course_response = requests.get(f"{base_url}/{course_id}", headers=headers)
+            
+            # التحقق من حالة الاستجابة
+            if course_response.status_code != 200:
+                st.error(f"خطأ في الاستجابة: {course_response.status_code}")
+                st.json(course_response.text)
+                return False
+            
+            course_data = course_response.json()
+            
+            # طباعة البيانات لفهم البنية
+            st.write("**بنية البيانات المُستلمة:**")
+            st.json(course_data)
+            
+            # محاولة الوصول للمجلدات مع معالجة أفضل للأخطاء
+            if "data" in course_data:
+                if "folders" in course_data["data"]:
+                    folders = course_data["data"]["folders"]
+                else:
+                    st.error("لم يتم العثور على 'folders' في 'data'")
+                    st.write("المفاتيح المتاحة في 'data':", list(course_data["data"].keys()))
+                    return False
+            else:
+                st.error("لم يتم العثور على 'data' في الاستجابة")
+                st.write("المفاتيح المتاحة:", list(course_data.keys()))
+                return False
             
             folders_data = []
             
             for folder in folders:
-                folder_id = folder["id"]
-                folder_details = requests.get(f"{base_url}/folders/{folder_id}", headers=headers).json()["data"]
-                
-                folder_info = {
-                    'id': folder_id,
-                    'name': folder_details["name"],
-                    'type': 'Folder',
-                    'children': []
-                }
-                
-                for child in folder_details.get("children", []):
-                    child_info = {
-                        'name': child["name"],
-                        'type': 'Subfolder',
-                        'materials': []
+                try:
+                    folder_id = folder.get("id")
+                    if not folder_id:
+                        st.warning(f"مجلد بدون ID: {folder}")
+                        continue
+                        
+                    # جلب تفاصيل المجلد
+                    folder_response = requests.get(f"{base_url}/folders/{folder_id}", headers=headers)
+                    
+                    if folder_response.status_code != 200:
+                        st.warning(f"خطأ في جلب المجلد {folder_id}: {folder_response.status_code}")
+                        continue
+                        
+                    folder_details_response = folder_response.json()
+                    
+                    # التحقق من بنية بيانات المجلد
+                    if "data" not in folder_details_response:
+                        st.warning(f"بيانات المجلد {folder_id} لا تحتوي على 'data'")
+                        continue
+                        
+                    folder_details = folder_details_response["data"]
+                    
+                    folder_info = {
+                        'id': folder_id,
+                        'name': folder_details.get("name", f"مجلد {folder_id}"),
+                        'type': 'Folder',
+                        'children': []
                     }
                     
-                    for material in child.get("materials", []):
-                        material_info = {
-                            'name': material["name"],
-                            'link': material["materialable"]["link"],
-                            'type': 'File'
+                    # معالجة المجلدات الفرعية
+                    children = folder_details.get("children", [])
+                    for child in children:
+                        child_info = {
+                            'name': child.get("name", "مجلد فرعي"),
+                            'type': 'Subfolder',
+                            'materials': []
                         }
-                        child_info['materials'].append(material_info)
+                        
+                        # معالجة المواد
+                        materials = child.get("materials", [])
+                        for material in materials:
+                            try:
+                                materialable = material.get("materialable", {})
+                                link = materialable.get("link", "")
+                                
+                                if link:
+                                    material_info = {
+                                        'name': material.get("name", "ملف غير معنون"),
+                                        'link': link,
+                                        'type': 'File'
+                                    }
+                                    child_info['materials'].append(material_info)
+                            except Exception as material_error:
+                                st.warning(f"خطأ في معالجة المادة: {material_error}")
+                                continue
+                        
+                        folder_info['children'].append(child_info)
                     
-                    folder_info['children'].append(child_info)
-                
-                folders_data.append(folder_info)
+                    folders_data.append(folder_info)
+                    
+                except Exception as folder_error:
+                    st.warning(f"خطأ في معالجة المجلد {folder.get('id', 'unknown')}: {folder_error}")
+                    continue
             
-            st.session_state.folders_data = folders_data
-            st.success("تم تحميل المجلدات بنجاح!")
-            return True
+            if folders_data:
+                st.session_state.folders_data = folders_data
+                st.success(f"تم تحميل {len(folders_data)} مجلد بنجاح!")
+                return True
+            else:
+                st.warning("لم يتم العثور على مجلدات صالحة")
+                return False
             
+    except requests.RequestException as e:
+        st.error(f"خطأ في الاتصال بالشبكة: {str(e)}")
+        return False
+    except json.JSONDecodeError as e:
+        st.error(f"خطأ في تحليل JSON: {str(e)}")
+        return False
     except Exception as e:
-        st.error(f"خطأ في تحميل البيانات: {str(e)}")
+        st.error(f"خطأ غير متوقع: {str(e)}")
         return False
 
 def generate_curl_command(link, filename, headers):
