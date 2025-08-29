@@ -18,6 +18,12 @@ if 'folders_data' not in st.session_state:
     st.session_state.folders_data = None
 if 'expanded_folders' not in st.session_state:
     st.session_state.expanded_folders = set()
+if 'debug_mode' not in st.session_state:
+    st.session_state.debug_mode = False
+if 'use_proxy' not in st.session_state:
+    st.session_state.use_proxy = False
+if 'proxy_url' not in st.session_state:
+    st.session_state.proxy_url = ""
 
 def get_inputs():
     """Helper function to get and parse inputs from the Streamlit form."""
@@ -28,15 +34,24 @@ def get_inputs():
             raise ValueError("Course ID must be a number.")
     except ValueError as e:
         st.error(f"Invalid Course URL format. {e}")
-        return None, None, None
+        return None, None, None, None
 
     try:
         headers = json.loads(st.session_state.headers_json)
     except json.JSONDecodeError:
         st.error("Invalid JSON format in headers.")
-        return None, None, None
+        return None, None, None, None
     
-    return base_url, course_id, headers
+    # إعداد البروكسي
+    proxies = None
+    if hasattr(st.session_state, 'use_proxy') and st.session_state.use_proxy:
+        if st.session_state.proxy_url:
+            proxies = {
+                'http': st.session_state.proxy_url,
+                'https': st.session_state.proxy_url
+            }
+    
+    return base_url, course_id, headers, proxies
 
 def fetch_folders():
     """Fetch folders from the API and store in session state."""
@@ -57,9 +72,10 @@ def fetch_folders():
             
             course_data = course_response.json()
             
-            # طباعة البيانات لفهم البنية
-            st.write("**بنية البيانات المُستلمة:**")
-            st.json(course_data)
+            # طباعة البيانات لفهم البنية (فقط في وضع التحليل)
+            if st.session_state.debug_mode:
+                st.write("**بنية البيانات المُستلمة:**")
+                st.json(course_data)
             
             # محاولة الوصول للمجلدات مع معالجة أفضل للأخطاء
             if "data" in course_data:
@@ -159,19 +175,19 @@ def fetch_folders():
         st.error(f"خطأ غير متوقع: {str(e)}")
         return False
 
-def generate_curl_command(link, filename, headers):
+def generate_curl_command(link, filename, headers, proxies=None):
     """Generate curl command for downloading a file."""
-    curl_cmd = f'''curl -L "{link}" \\
-  -H "lang: {headers.get('lang', 'en')}" \\
-  -H "x-secret: {headers.get('x-secret', '')}" \\
-  -H "authorization: {headers.get('authorization', '')}" \\
-  -H "x-device-token: {headers.get('x-device-token', '')}" \\
-  -H "x-app-version: {headers.get('x-app-version', '')}" \\
-  -H "x-device-type: {headers.get('x-device-type', '')}" \\
-  -H "x-device-version: {headers.get('x-device-version', '')}" \\
-  -H "accept-encoding: {headers.get('accept-encoding', 'gzip')}" \\
-  -H "user-agent: {headers.get('user-agent', '')}" \\
-  -o "/storage/emulated/0/كورس/{filename}"'''
+    curl_cmd = f'curl -L "{link}" \\\n'
+    
+    # إضافة Headers
+    for key, value in headers.items():
+        curl_cmd += f'  -H "{key}: {value}" \\\n'
+    
+    # إضافة البروكسي إذا كان متوفراً
+    if proxies and proxies.get('https'):
+        curl_cmd += f'  --proxy "{proxies["https"]}" \\\n'
+    
+    curl_cmd += f'  -o "/storage/emulated/0/كورس/{filename}"'
     
     return curl_cmd
 
@@ -219,11 +235,11 @@ def display_folders():
 
 def show_download_dialog(filename, link):
     """Show download dialog with curl command."""
-    _, _, headers = get_inputs()
+    _, _, headers, proxies = get_inputs()
     if not headers:
         return
     
-    curl_cmd = generate_curl_command(link, filename, headers)
+    curl_cmd = generate_curl_command(link, filename, headers, proxies)
     
     st.markdown("### 💾 أمر التحميل")
     st.code(curl_cmd, language="bash")
@@ -279,6 +295,39 @@ with col1:
     # زر تحميل المجلدات
     if st.button("🔄 عرض المجلدات", type="primary"):
         fetch_folders()
+    
+    # وضع التحليل
+    st.session_state.debug_mode = st.checkbox("🔍 وضع التحليل (Debug Mode)", 
+                                              value=st.session_state.debug_mode,
+                                              help="إظهار بيانات API للمساعدة في حل المشاكل")
+    
+    # إعدادات البروكسي
+    st.markdown("---")
+    st.markdown("**🌍 إعدادات البروكسي (لتجاوز القيود الجغرافية):**")
+    
+    st.session_state.use_proxy = st.checkbox("🔐 استخدام البروكسي", 
+                                             value=st.session_state.use_proxy,
+                                             help="للوصول من خارج مصر")
+    
+    if st.session_state.use_proxy:
+        st.session_state.proxy_url = st.text_input(
+            "رابط البروكسي:",
+            value=st.session_state.proxy_url,
+            placeholder="http://proxy-server:port أو socks5://proxy-server:port",
+            help="مثال: http://proxy.example.com:8080"
+        )
+        
+        st.info("💡 **أمثلة على مواقع البروكسي المجاني:**")
+        st.markdown("""
+        - [Free Proxy List](https://www.freeproxylists.net/)
+        - [ProxyScrape](https://proxyscrape.com/)
+        - [HideMyName](https://hidemy.name/en/proxy-list/)
+        
+        **تأكد من اختيار بروكسي مصري للحصول على أفضل النتائج**
+        """)
+    
+    if not st.session_state.use_proxy:
+        st.warning("⚠️ قد تحتاج لاستخدام VPN مصري أو بروكسي للوصول للـ API")
 
 with col2:
     st.markdown("### 📚 عرض المجلدات")
@@ -309,7 +358,20 @@ with st.sidebar:
     st.markdown("""
     1. تأكد من صحة Course URL
     2. تأكد من صحة Headers JSON
-    3. اضغط على "عرض المجلدات"
-    4. اختر الملف المراد تحميله
-    5. انسخ أمر curl وشغله في الطرفية
+    3. **إذا كنت خارج مصر:**
+       - فعّل استخدام البروكسي
+       - أدخل رابط بروكسي مصري
+       - أو استخدم VPN مصري
+    4. اضغط على "عرض المجلدات"
+    5. اختر الملف المراد تحميله
+    6. انسخ أمر curl وشغله في الطرفية
+    """)
+    
+    st.markdown("### ⚠️ ملاحظة مهمة")
+    st.error("الـ API يسمح بالوصول من مصر فقط!")
+    st.markdown("""
+    **الحلول:**
+    - 🌐 **VPN مصري** (الأسهل)
+    - 🔐 **بروكسي مصري** (مدمج في التطبيق)
+    - 📱 **استخدم التطبيق من مصر**
     """)
