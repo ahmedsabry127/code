@@ -65,12 +65,52 @@ def get_parsed_inputs(course_url: str, headers_json: str) -> Optional[Tuple[str,
         st.error("خطأ في تنسيق JSON للـ headers")
         return None
 
+def test_headers_connection(base_url: str, course_id: str, headers: Dict[str, Any]) -> bool:
+    """اختبار الاتصال والـ headers قبل جلب البيانات."""
+    try:
+        st.info("🔍 اختبار الاتصال والـ headers...")
+        
+        # اختبار بسيط للاتصال
+        test_response = requests.get(
+            f"{base_url}/{course_id}", 
+            headers=headers, 
+            timeout=10
+        )
+        
+        if test_response.status_code == 200:
+            st.success("✅ الاتصال ناجح والـ headers صحيحة!")
+            return True
+        elif test_response.status_code == 403:
+            st.error("🚫 خطأ 403 - تحقق من الـ headers")
+            st.json({
+                "status_code": test_response.status_code,
+                "response_text": test_response.text[:200] + "..." if len(test_response.text) > 200 else test_response.text
+            })
+            return False
+        else:
+            st.warning(f"⚠️ رمز الحالة: {test_response.status_code}")
+            return False
+            
+    except Exception as e:
+        st.error(f"❌ فشل اختبار الاتصال: {e}")
+        return False
+
 @st.cache_data(ttl=300)  # Cache لمدة 5 دقائق
 def fetch_course_data(base_url: str, course_id: str, headers: Dict[str, Any]):
     """جلب بيانات الكورس والمجلدات."""
     try:
-        # جلب بيانات الكورس
+        # التأكد من وجود headers ضرورية
+        if not headers.get('authorization'):
+            st.error("يجب توفير authorization token في الـ headers")
+            return None
+            
+        # جلب بيانات الكورس مع الـ headers
+        st.info(f"جاري جلب بيانات الكورس من: {base_url}/{course_id}")
         course_response = requests.get(f"{base_url}/{course_id}", headers=headers, timeout=30)
+        
+        # طباعة تفاصيل الاستجابة للتشخيص
+        st.write(f"Status Code: {course_response.status_code}")
+        
         course_response.raise_for_status()
         course = course_response.json()
         
@@ -88,14 +128,30 @@ def fetch_course_data(base_url: str, course_id: str, headers: Dict[str, Any]):
         for i, folder in enumerate(folders):
             folder_id = folder["id"]
             try:
+                # جلب تفاصيل المجلد مع الـ headers
                 folder_response = requests.get(
                     f"{base_url}/folders/{folder_id}", 
                     headers=headers, 
                     timeout=30
                 )
+                
+                # التحقق من حالة الاستجابة
+                if folder_response.status_code == 403:
+                    st.error(f"ممنوع الوصول للمجلد {folder.get('name', 'غير معروف')}. تحقق من صحة الـ headers")
+                    continue
+                elif folder_response.status_code != 200:
+                    st.warning(f"خطأ {folder_response.status_code} في جلب المجلد {folder.get('name', 'غير معروف')}")
+                    continue
+                    
                 folder_response.raise_for_status()
                 folder_details = folder_response.json()["data"]
                 detailed_folders.append(folder_details)
+                
+            except requests.exceptions.HTTPError as e:
+                if "403" in str(e):
+                    st.error(f"ممنوع الوصول للمجلد {folder.get('name', 'غير معروف')}. تحقق من صحة الـ authorization token")
+                else:
+                    st.warning(f"خطأ HTTP في جلب المجلد {folder.get('name', 'غير معروف')}: {e}")
             except Exception as e:
                 st.warning(f"تعذر جلب المجلد {folder.get('name', 'غير معروف')}: {e}")
             
@@ -104,6 +160,20 @@ def fetch_course_data(base_url: str, course_id: str, headers: Dict[str, Any]):
         progress_bar.empty()
         return detailed_folders
         
+    except requests.exceptions.HTTPError as e:
+        if "403" in str(e):
+            st.error("🚫 **خطأ 403 - Forbidden**")
+            st.error("السبب المحتمل: مشكلة في الـ headers المطلوبة")
+            st.info("""
+            **تحقق من الآتي:**
+            - صحة الـ authorization token
+            - تاريخ انتهاء الـ token
+            - صحة الـ x-secret
+            - تطابق بقية الـ headers مع المطلوب
+            """)
+        else:
+            st.error(f"خطأ HTTP: {e}")
+        return None
     except requests.exceptions.RequestException as e:
         st.error(f"خطأ في الشبكة: {e}")
         return None
@@ -163,12 +233,28 @@ def main():
         
         # زر جلب البيانات
         fetch_button = st.button("🔄 جلب المجلدات", type="primary")
+        
+        # زر اختبار الاتصال
+        test_button = st.button("🧪 اختبار الاتصال", help="اختبر الـ headers قبل جلب البيانات")
     
     # المحتوى الرئيسي
+    
+    # اختبار الاتصال
+    if test_button:
+        parsed_data = get_parsed_inputs(course_url, headers_json)
+        if parsed_data:
+            base_url, course_id, headers = parsed_data
+            test_headers_connection(base_url, course_id, headers)
+    
+    # جلب البيانات
     if fetch_button:
         parsed_data = get_parsed_inputs(course_url, headers_json)
         if parsed_data:
             base_url, course_id, headers = parsed_data
+            
+            # اختبار أولي للـ headers
+            if not test_headers_connection(base_url, course_id, headers):
+                st.stop()
             
             with st.spinner("جاري جلب بيانات الكورس..."):
                 folders_data = fetch_course_data(base_url, course_id, headers)
@@ -275,6 +361,18 @@ def main():
         - إنشاء أوامر curl للتنزيل
         - البحث في الملفات
         - نسخ المسارات والأوامر
+        """)
+        
+        st.warning("""
+        **مهم جداً:**
+        تأكد من صحة الـ headers التالية:
+        - `authorization`: Bearer token صحيح
+        - `x-secret`: المفتاح السري
+        - `x-device-token`: رمز الجهاز
+        
+        إذا واجهت خطأ 403، جرب:
+        1. تحديث الـ authorization token
+        2. التأكد من تطابق الـ headers مع التطبيق الأصلي
         """)
         
         if st.button("🗑️ مسح البيانات المحفوظة"):
